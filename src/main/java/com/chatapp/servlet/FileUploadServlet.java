@@ -3,6 +3,7 @@ package com.chatapp.servlet;
 import com.chatapp.entity.FileEntity;
 import com.chatapp.entity.Message;
 import com.chatapp.entity.User;
+import com.chatapp.entity.Group;
 import com.chatapp.util.HibernateUtil;
 import org.apache.commons.fileupload.FileItem;
 import org.apache.commons.fileupload.disk.DiskFileItemFactory;
@@ -25,10 +26,13 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.logging.Logger;
+import java.util.logging.Level;
 
 @WebServlet("/upload")
 public class FileUploadServlet extends HttpServlet {
     private static final long serialVersionUID = 1L;
+    private static final Logger logger = Logger.getLogger(FileUploadServlet.class.getName());
     private static final long MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
     private static final String UPLOAD_DIRECTORY = "uploads";
     
@@ -40,13 +44,13 @@ public class FileUploadServlet extends HttpServlet {
         User currentUser = (User) httpSession.getAttribute("user");
         
         if (currentUser == null) {
-            response.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
+            sendJsonError(response, "User not authenticated", HttpServletResponse.SC_UNAUTHORIZED);
             return;
         }
         
         // Check if request is multipart
         if (!ServletFileUpload.isMultipartContent(request)) {
-            response.setStatus(HttpServletResponse.SC_BAD_REQUEST);
+            sendJsonError(response, "Request must be multipart/form-data", HttpServletResponse.SC_BAD_REQUEST);
             return;
         }
         
@@ -59,12 +63,18 @@ public class FileUploadServlet extends HttpServlet {
         upload.setFileSizeMax(MAX_FILE_SIZE);
         upload.setSizeMax(MAX_FILE_SIZE * 2);
         
+        Session session = null;
+        Transaction tx = null;
+        
         try {
             // Get upload directory path
             String uploadPath = getServletContext().getRealPath("") + File.separator + UPLOAD_DIRECTORY;
             File uploadDir = new File(uploadPath);
             if (!uploadDir.exists()) {
-                uploadDir.mkdirs();
+                boolean created = uploadDir.mkdirs();
+                if (!created) {
+                    logger.warning("Failed to create upload directory: " + uploadPath);
+                }
             }
             
             List<FileItem> items = upload.parseRequest(request);
@@ -76,7 +86,7 @@ public class FileUploadServlet extends HttpServlet {
             for (FileItem item : items) {
                 if (item.isFormField()) {
                     String fieldName = item.getFieldName();
-                    String fieldValue = item.getString();
+                    String fieldValue = item.getString("UTF-8");
                     
                     if ("groupId".equals(fieldName)) {
                         groupId = fieldValue;
@@ -89,21 +99,31 @@ public class FileUploadServlet extends HttpServlet {
             }
             
             if (fileItem == null || fileItem.getSize() == 0) {
-                response.setStatus(HttpServletResponse.SC_BAD_REQUEST);
+                sendJsonError(response, "No file selected or file is empty", HttpServletResponse.SC_BAD_REQUEST);
                 return;
             }
             
             // Validate file size
             if (fileItem.getSize() > MAX_FILE_SIZE) {
-                response.setStatus(HttpServletResponse.SC_REQUEST_ENTITY_TOO_LARGE);
+                sendJsonError(response, "File size exceeds maximum limit of 10MB", HttpServletResponse.SC_REQUEST_ENTITY_TOO_LARGE);
+                return;
+            }
+            
+            // Validate destination
+            if ((groupId == null || groupId.isEmpty()) && (receiverId == null || receiverId.isEmpty())) {
+                sendJsonError(response, "Either groupId or receiverId is required", HttpServletResponse.SC_BAD_REQUEST);
                 return;
             }
             
             // Generate unique filename
             String originalFileName = fileItem.getName();
+            if (originalFileName == null || originalFileName.isEmpty()) {
+                originalFileName = "unnamed_file";
+            }
+            
             String fileExtension = "";
             int lastDotIndex = originalFileName.lastIndexOf('.');
-            if (lastDotIndex > 0) {
+            if (lastDotIndex > 0 && lastDotIndex < originalFileName.length() - 1) {
                 fileExtension = originalFileName.substring(lastDotIndex);
             }
             
@@ -114,73 +134,71 @@ public class FileUploadServlet extends HttpServlet {
             File storeFile = new File(filePath);
             fileItem.write(storeFile);
             
-            // Save file info to database
-            Session session = HibernateUtil.getSessionFactory().getCurrentSession();
-            Transaction tx = session.beginTransaction();
+            logger.info("File saved to: " + filePath + ", Size: " + fileItem.getSize() + " bytes");
             
-            try {
-                FileEntity fileEntity = new FileEntity(
-                    originalFileName,
-                    storedFileName,
-                    UPLOAD_DIRECTORY + "/" + storedFileName,
-                    fileItem.getSize(),
-                    fileItem.getContentType(),
-                    currentUser
-                );
-                
-                session.save(fileEntity);
-                
-                // Create message with file attachment
-                Message message = new Message();
-                message.setSender(currentUser);
-                message.setContent("📎 " + originalFileName);
-                message.setType(getMessageTypeFromMimeType(fileItem.getContentType()));
-                message.setFile(fileEntity);
-                message.setSentAt(LocalDateTime.now());
-                
-                if (groupId != null && !groupId.isEmpty()) {
-                    message.setGroup(session.get(com.chatapp.entity.Group.class, Long.parseLong(groupId)));
-                } else if (receiverId != null && !receiverId.isEmpty()) {
-                    message.setReceiver(session.get(User.class, Long.parseLong(receiverId)));
+            // Save file info to database
+            session = HibernateUtil.getSessionFactory().getCurrentSession();
+            tx = session.beginTransaction();
+            
+            FileEntity fileEntity = new FileEntity(
+                originalFileName,
+                storedFileName,
+                UPLOAD_DIRECTORY + "/" + storedFileName,
+                fileItem.getSize(),
+                fileItem.getContentType(),
+                currentUser
+            );
+            
+            session.save(fileEntity);
+            
+            // Create message with file attachment
+            Message message = new Message();
+            message.setSender(currentUser);
+            message.setContent("📎 " + originalFileName);
+            message.setType(getMessageTypeFromMimeType(fileItem.getContentType()));
+            message.setFile(fileEntity);
+            message.setSentAt(LocalDateTime.now());
+            
+            if (groupId != null && !groupId.isEmpty()) {
+                Group group = session.get(Group.class, Long.parseLong(groupId));
+                if (group != null) {
+                    message.setGroup(group);
+                    logger.info("File message sent to group: " + group.getName());
+                } else {
+                    sendJsonError(response, "Group not found", HttpServletResponse.SC_NOT_FOUND);
+                    return;
                 }
-                
-                session.save(message);
-                tx.commit();
-                
-                // Return success response
-                response.setContentType("application/json");
-                response.setCharacterEncoding("UTF-8");
-                
-                Map<String, Object> result = new HashMap<>();
-                result.put("success", true);
-                result.put("fileId", fileEntity.getId());
-                result.put("fileName", originalFileName);
-                result.put("fileSize", fileEntity.getFileSize());
-                result.put("messageId", message.getId());
-                result.put("timestamp", message.getSentAt().format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")));
-                result.put("downloadUrl", request.getContextPath() + "/download?fileId=" + fileEntity.getId());
-                
-                PrintWriter out = response.getWriter();
-                out.print(new com.fasterxml.jackson.databind.ObjectMapper().writeValueAsString(result));
-                out.flush();
-                
-            } catch (Exception e) {
-                tx.rollback();
-                throw e;
+            } else if (receiverId != null && !receiverId.isEmpty()) {
+                User receiver = session.get(User.class, Long.parseLong(receiverId));
+                if (receiver != null) {
+                    message.setReceiver(receiver);
+                    logger.info("File message sent to user: " + receiver.getUsername());
+                } else {
+                    sendJsonError(response, "Receiver not found", HttpServletResponse.SC_NOT_FOUND);
+                    return;
+                }
             }
             
+            session.save(message);
+            tx.commit();
+            
+            // Return success response
+            Map<String, Object> result = new HashMap<>();
+            result.put("success", true);
+            result.put("fileId", fileEntity.getId());
+            result.put("fileName", originalFileName);
+            result.put("fileSize", fileEntity.getFileSize());
+            result.put("messageId", message.getId());
+            result.put("timestamp", message.getSentAt().format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")));
+            result.put("downloadUrl", request.getContextPath() + "/download?fileId=" + fileEntity.getId());
+            
+            sendJsonResponse(response, result);
+            logger.info("File upload completed successfully: " + originalFileName);
+            
         } catch (Exception e) {
-            e.printStackTrace();
-            response.setStatus(HttpServletResponse.SC_INTERNAL_SERVER_ERROR);
-            
-            Map<String, Object> error = new HashMap<>();
-            error.put("success", false);
-            error.put("error", "File upload failed: " + e.getMessage());
-            
-            response.setContentType("application/json");
-            PrintWriter out = response.getWriter();
-            out.print(new com.fasterxml.jackson.databind.ObjectMapper().writeValueAsString(error));
-            out.flush();
+            if (tx != null) tx.rollback();
+            logger.log(Level.SEVERE, "Error uploading file", e);
+            sendJsonError(response, "File upload failed: " + e.getMessage(), HttpServletResponse.SC_INTERNAL_SERVER_ERROR);
         }
     }
     
@@ -189,14 +207,36 @@ public class FileUploadServlet extends HttpServlet {
             return Message.MessageType.FILE;
         }
         
-        if (mimeType.startsWith("image/")) {
+        String lowerMimeType = mimeType.toLowerCase();
+        if (lowerMimeType.startsWith("image/")) {
             return Message.MessageType.IMAGE;
-        } else if (mimeType.startsWith("video/")) {
+        } else if (lowerMimeType.startsWith("video/")) {
             return Message.MessageType.VIDEO;
-        } else if (mimeType.startsWith("audio/")) {
+        } else if (lowerMimeType.startsWith("audio/")) {
             return Message.MessageType.VOICE;
         } else {
             return Message.MessageType.FILE;
         }
+    }
+    
+    private void sendJsonResponse(HttpServletResponse response, Object data) throws IOException {
+        response.setContentType("application/json");
+        response.setCharacterEncoding("UTF-8");
+        
+        try (PrintWriter out = response.getWriter()) {
+            com.fasterxml.jackson.databind.ObjectMapper mapper = new com.fasterxml.jackson.databind.ObjectMapper();
+            out.print(mapper.writeValueAsString(data));
+            out.flush();
+        }
+    }
+    
+    private void sendJsonError(HttpServletResponse response, String message, int statusCode) throws IOException {
+        response.setStatus(statusCode);
+        
+        Map<String, Object> error = new HashMap<>();
+        error.put("success", false);
+        error.put("error", message);
+        
+        sendJsonResponse(response, error);
     }
 }

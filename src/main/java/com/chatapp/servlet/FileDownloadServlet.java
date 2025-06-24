@@ -14,10 +14,15 @@ import java.io.File;
 import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.OutputStream;
+import java.net.URLEncoder;
+import java.nio.charset.StandardCharsets;
+import java.util.logging.Logger;
+import java.util.logging.Level;
 
 @WebServlet("/download")
 public class FileDownloadServlet extends HttpServlet {
     private static final long serialVersionUID = 1L;
+    private static final Logger logger = Logger.getLogger(FileDownloadServlet.class.getName());
     
     @Override
     protected void doGet(HttpServletRequest request, HttpServletResponse response) 
@@ -26,63 +31,93 @@ public class FileDownloadServlet extends HttpServlet {
         String fileIdStr = request.getParameter("fileId");
         
         if (fileIdStr == null || fileIdStr.isEmpty()) {
-            response.setStatus(HttpServletResponse.SC_BAD_REQUEST);
+            response.sendError(HttpServletResponse.SC_BAD_REQUEST, "File ID is required");
             return;
         }
+        
+        Session session = null;
+        Transaction tx = null;
         
         try {
             Long fileId = Long.parseLong(fileIdStr);
             
-            Session session = HibernateUtil.getSessionFactory().getCurrentSession();
-            Transaction tx = session.beginTransaction();
+            session = HibernateUtil.getSessionFactory().getCurrentSession();
+            tx = session.beginTransaction();
             
-            try {
-                FileEntity fileEntity = session.get(FileEntity.class, fileId);
-                tx.commit();
+            FileEntity fileEntity = session.get(FileEntity.class, fileId);
+            tx.commit();
+            
+            if (fileEntity == null) {
+                response.sendError(HttpServletResponse.SC_NOT_FOUND, "File not found");
+                return;
+            }
+            
+            // Construct file path
+            String filePath = getServletContext().getRealPath("") + File.separator + fileEntity.getFilePath();
+            File file = new File(filePath);
+            
+            if (!file.exists()) {
+                logger.warning("File not found on disk: " + filePath);
+                response.sendError(HttpServletResponse.SC_NOT_FOUND, "File not found on server");
+                return;
+            }
+            
+            // Validate file is within upload directory (security check)
+            String uploadDir = getServletContext().getRealPath("") + File.separator + "uploads";
+            if (!file.getCanonicalPath().startsWith(new File(uploadDir).getCanonicalPath())) {
+                logger.warning("Attempted access to file outside upload directory: " + filePath);
+                response.sendError(HttpServletResponse.SC_FORBIDDEN, "Access denied");
+                return;
+            }
+            
+            // Set response headers
+            String mimeType = fileEntity.getMimeType();
+            if (mimeType == null || mimeType.isEmpty()) {
+                mimeType = getServletContext().getMimeType(fileEntity.getOriginalName());
+                if (mimeType == null) {
+                    mimeType = "application/octet-stream";
+                }
+            }
+            
+            response.setContentType(mimeType);
+            response.setContentLengthLong(fileEntity.getFileSize());
+            
+            // Encode filename for proper handling of special characters
+            String encodedFilename = URLEncoder.encode(fileEntity.getOriginalName(), StandardCharsets.UTF_8.toString())
+                    .replaceAll("\\+", "%20");
+            
+            response.setHeader("Content-Disposition", 
+                "attachment; filename=\"" + fileEntity.getOriginalName() + "\"; filename*=UTF-8''" + encodedFilename);
+            
+            // Add cache control headers
+            response.setHeader("Cache-Control", "private, max-age=3600");
+            response.setDateHeader("Expires", System.currentTimeMillis() + 3600000); // 1 hour
+            
+            // Stream file to response
+            try (FileInputStream fileInputStream = new FileInputStream(file);
+                 OutputStream outputStream = response.getOutputStream()) {
                 
-                if (fileEntity == null) {
-                    response.setStatus(HttpServletResponse.SC_NOT_FOUND);
-                    return;
+                byte[] buffer = new byte[8192]; // 8KB buffer
+                int bytesRead;
+                long totalBytesRead = 0;
+                
+                while ((bytesRead = fileInputStream.read(buffer)) != -1) {
+                    outputStream.write(buffer, 0, bytesRead);
+                    totalBytesRead += bytesRead;
                 }
                 
-                String filePath = getServletContext().getRealPath("") + File.separator + fileEntity.getFilePath();
-                File file = new File(filePath);
-                
-                if (!file.exists()) {
-                    response.setStatus(HttpServletResponse.SC_NOT_FOUND);
-                    return;
-                }
-                
-                // Set response headers
-                response.setContentType(fileEntity.getMimeType());
-                response.setContentLengthLong(fileEntity.getFileSize());
-                response.setHeader("Content-Disposition", 
-                    "attachment; filename=\"" + fileEntity.getOriginalName() + "\"");
-                
-                // Stream file to response
-                try (FileInputStream fileInputStream = new FileInputStream(file);
-                     OutputStream outputStream = response.getOutputStream()) {
-                    
-                    byte[] buffer = new byte[4096];
-                    int bytesRead;
-                    
-                    while ((bytesRead = fileInputStream.read(buffer)) != -1) {
-                        outputStream.write(buffer, 0, bytesRead);
-                    }
-                    
-                    outputStream.flush();
-                }
-                
-            } catch (Exception e) {
-                tx.rollback();
-                throw e;
+                outputStream.flush();
+                logger.info("File downloaded successfully: " + fileEntity.getOriginalName() + 
+                           " (" + totalBytesRead + " bytes)");
             }
             
         } catch (NumberFormatException e) {
-            response.setStatus(HttpServletResponse.SC_BAD_REQUEST);
+            logger.log(Level.WARNING, "Invalid file ID format: " + fileIdStr, e);
+            response.sendError(HttpServletResponse.SC_BAD_REQUEST, "Invalid file ID format");
         } catch (Exception e) {
-            e.printStackTrace();
-            response.setStatus(HttpServletResponse.SC_INTERNAL_SERVER_ERROR);
+            if (tx != null) tx.rollback();
+            logger.log(Level.SEVERE, "Error downloading file", e);
+            response.sendError(HttpServletResponse.SC_INTERNAL_SERVER_ERROR, "Error downloading file");
         }
     }
 }

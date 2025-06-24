@@ -2,44 +2,42 @@ package com.chatapp.util;
 
 import jakarta.servlet.ServletContextEvent;
 import jakarta.servlet.ServletContextListener;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import jakarta.servlet.annotation.WebListener;
+import java.util.logging.Logger;
+import java.util.logging.Level;
 
 /**
  * Servlet context listener that initializes Hibernate when the application starts
  * and shuts it down when the application stops.
  */
+@WebListener
 public class HibernateServletContextListener implements ServletContextListener {
-    private static final Logger logger = LoggerFactory.getLogger(HibernateServletContextListener.class);    @Override
+    private static final Logger logger = Logger.getLogger(HibernateServletContextListener.class.getName());
+    
+    @Override
     public void contextInitialized(ServletContextEvent sce) {
-        logger.info("Initializing Hibernate SessionFactory...");
+        logger.info("Zola Chat Application starting up...");
         try {
             // Force initialization of the SessionFactory
             HibernateUtil.getSessionFactory();
+            logger.info("Hibernate SessionFactory initialized successfully");
             
-            // Test database connection
-            org.hibernate.Session session = HibernateUtil.getSessionFactory().openSession();
-            try {
-                // Run a simple query to validate connection
-                session.createNativeQuery("SELECT 1").uniqueResult();
-                logger.info("Database connection test successful");
-            } catch (Exception dbEx) {
-                logger.error("Database connection test failed", dbEx);
-            } finally {
-                if (session != null && session.isOpen()) {
-                    session.close();
-                }
-            }
+            // Log application startup
+            logger.info("Zola Chat Application started successfully");
             
-            logger.info("Hibernate SessionFactory initialized successfully.");
         } catch (Exception e) {
-            logger.error("Failed to initialize Hibernate SessionFactory", e);
+            logger.log(Level.SEVERE, "Failed to initialize Zola Chat Application", e);
         }
     }
 
     @Override
     public void contextDestroyed(ServletContextEvent sce) {
-        logger.info("Shutting down Hibernate SessionFactory...");
-        HibernateUtil.shutdown();
+        logger.info("Zola Chat Application shutting down...");
+        try {
+            HibernateUtil.shutdown();
+            logger.info("Zola Chat Application shutdown completed");
+        } catch (Exception e) {
+            logger.log(Level.WARNING, "Error during application shutdown", e);
+        }
     }
 }

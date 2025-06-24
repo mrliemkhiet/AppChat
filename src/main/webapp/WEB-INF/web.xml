@@ -5,17 +5,22 @@
          https://jakarta.ee/xml/ns/jakartaee/web-app_5_0.xsd"
          version="5.0">
     
-    <display-name>ChatApp</display-name>
-    <description>Java Servlet Chat Application</description>
+    <display-name>Zola - Modern Chat Application</display-name>
+    <description>Zola - A modern, feature-rich chat application built with Java Servlets and Hibernate</description>
     
     <!-- Welcome file list -->
     <welcome-file-list>
         <welcome-file>chat</welcome-file>
+        <welcome-file>index.jsp</welcome-file>
     </welcome-file-list>
     
     <!-- Session configuration -->
     <session-config>
-        <session-timeout>30</session-timeout>
+        <session-timeout>60</session-timeout>
+        <cookie-config>
+            <http-only>true</http-only>
+            <secure>false</secure>
+        </cookie-config>
     </session-config>
     
     <!-- Error pages -->
@@ -29,16 +34,21 @@
         <location>/WEB-INF/views/error.jsp</location>
     </error-page>
     
+    <error-page>
+        <error-code>403</error-code>
+        <location>/WEB-INF/views/error.jsp</location>
+    </error-page>
+    
     <!-- Exception handling -->
     <error-page>
         <exception-type>java.lang.Throwable</exception-type>
         <location>/WEB-INF/views/error.jsp</location>
     </error-page>
     
-    <!-- Context parameters -->
+    <!-- Context parameters for database configuration -->
     <context-param>
         <param-name>hibernate.connection.url</param-name>
-        <param-value>jdbc:mysql://localhost:3306/chatappdb</param-value>
+        <param-value>jdbc:mysql://localhost:3306/chatappdb?useSSL=false&amp;serverTimezone=Asia/Ho_Chi_Minh&amp;allowPublicKeyRetrieval=true&amp;useUnicode=true&amp;characterEncoding=UTF-8</param-value>
     </context-param>
     
     <context-param>
@@ -49,6 +59,16 @@
     <context-param>
         <param-name>hibernate.connection.password</param-name>
         <param-value></param-value>
+    </context-param>
+    
+    <context-param>
+        <param-name>app.name</param-name>
+        <param-value>Zola</param-value>
+    </context-param>
+    
+    <context-param>
+        <param-name>app.version</param-name>
+        <param-value>1.0.0</param-value>
     </context-param>
     
     <!-- Filters -->
@@ -70,9 +90,82 @@
         <url-pattern>/*</url-pattern>
     </filter-mapping>
     
-    <!-- Listener to initialize Hibernate on startup -->
-    <listener>
-        <listener-class>com.chatapp.util.HibernateServletContextListener</listener-class>
-    </listener>
+    <!-- Security filter for file downloads -->
+    <filter>
+        <filter-name>SecurityFilter</filter-name>
+        <filter-class>org.apache.catalina.filters.HttpHeaderSecurityFilter</filter-class>
+        <init-param>
+            <param-name>antiClickJackingEnabled</param-name>
+            <param-value>true</param-value>
+        </init-param>
+        <init-param>
+            <param-name>antiClickJackingOption</param-name>
+            <param-value>SAMEORIGIN</param-value>
+        </init-param>
+    </filter>
+    
+    <filter-mapping>
+        <filter-name>SecurityFilter</filter-name>
+        <url-pattern>/*</url-pattern>
+    </filter-mapping>
+    
+    <!-- MIME type mappings for file downloads -->
+    <mime-mapping>
+        <extension>pdf</extension>
+        <mime-type>application/pdf</mime-type>
+    </mime-mapping>
+    
+    <mime-mapping>
+        <extension>doc</extension>
+        <mime-type>application/msword</mime-type>
+    </mime-mapping>
+    
+    <mime-mapping>
+        <extension>docx</extension>
+        <mime-type>application/vnd.openxmlformats-officedocument.wordprocessingml.document</mime-type>
+    </mime-mapping>
+    
+    <mime-mapping>
+        <extension>xls</extension>
+        <mime-type>application/vnd.ms-excel</mime-type>
+    </mime-mapping>
+    
+    <mime-mapping>
+        <extension>xlsx</extension>
+        <mime-type>application/vnd.openxmlformats-officedocument.spreadsheetml.sheet</mime-type>
+    </mime-mapping>
+    
+    <mime-mapping>
+        <extension>ppt</extension>
+        <mime-type>application/vnd.ms-powerpoint</mime-type>
+    </mime-mapping>
+    
+    <mime-mapping>
+        <extension>pptx</extension>
+        <mime-type>application/vnd.openxmlformats-officedocument.presentationml.presentation</mime-type>
+    </mime-mapping>
+    
+    <mime-mapping>
+        <extension>zip</extension>
+        <mime-type>application/zip</mime-type>
+    </mime-mapping>
+    
+    <mime-mapping>
+        <extension>rar</extension>
+        <mime-type>application/x-rar-compressed</mime-type>
+    </mime-mapping>
+    
+    <mime-mapping>
+        <extension>7z</extension>
+        <mime-type>application/x-7z-compressed</mime-type>
+    </mime-mapping>
+    
+    <!-- Resource references -->
+    <resource-ref>
+        <description>MySQL Database Connection</description>
+        <res-ref-name>jdbc/ChatAppDB</res-ref-name>
+        <res-type>javax.sql.DataSource</res-type>
+        <res-auth>Container</res-auth>
+    </resource-ref>
     
 </web-app>
